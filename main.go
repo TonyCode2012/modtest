@@ -32,3 +32,12 @@ func (m *modtest) Remove(c cid.Cid) {
     delete(m.rootToCidMap, c)
     m.rtclk.Unlock()
 }
+
+func (m *modtest) Cids(c cid.Cid) []cid.Cid {
+    var ret []cid.Cid
+    m.rtclk.Lock()
+    copy(ret, m.rootToCidMap[c])
+    m.rtclk.Unlock()
+
+    return ret
+}
