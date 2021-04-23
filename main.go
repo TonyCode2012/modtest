@@ -6,6 +6,7 @@ import (
     "bytes"
     "fmt"
     "context"
+    "errors"
     "encoding/binary"
     "encoding/json"
     "io/ioutil"
@@ -21,6 +22,16 @@ type moduleTest struct {
     rootToCidMap map[cid.Cid][]cid.Cid
 }
 
+type sessionKV struct {
+    sk string
+    cid string
+}
+
+var (
+    sessionKey = "key"
+    sworkerBaseUrl = "http://127.0.0.1:12222/api/v0"
+)
+
 var md *moduleTest
 var once sync.Once
 
@@ -31,15 +42,48 @@ func GetInstance() *moduleTest {
     return md
 }
 
-func SealBlockStart(c cid.Cid) error {
+func undefinedError() error {
+    if len(sworkerBaseUrl) == 0 {
+        return errors.New("sWorker base url not defined!")
+    }
+    return nil
+}
+
+func unexpectedError() error {
+    return errors.New("unexpected error happens!")
+}
+
+func getKVFromSession(ctx context.Context) sessionKV {
+    buf := ctx.Value(sessionKey)
+    var kv sessionKV
+    err := json.Unmarshal(buf, &kv)
+    if err != nil {
+        return err
+    }
+    return kv
+}
+
+func SealBlockStart(ctx context.Context, c cid.Cid) error {
+    err := undefinedError()
+    if err != nil {
+        return err
+    }
+
     type startParam struct {
+        sk string
         cid string
     }
+
+    kv := getKVFromSession(ctx)
+    if kv == nil {
+        return unexpectedError()
+    }
     var sp = startParam{
-        cid: c.KeyString(),
+        sk: kv.sk,
+        cid: c.String(),
     }
     sj, _ := json.Marshal(sp)
-    _, err := http.Post("http://127.0.0.1:12222/api/v0/storage/seal_start", "application/json", bytes.NewReader(sj))
+    _, err = http.Post(sworkerBaseUrl + "/storage/seal_start", "application/json", bytes.NewReader(sj))
     if err != nil {
         fmt.Printf("Inform sWorker to start seal error:%s\n", err)
         return err
@@ -47,18 +91,30 @@ func SealBlockStart(c cid.Cid) error {
     return nil
 }
 
-func SealBlockEnd(c cid.Cid, s bool, ctx context.Context, dserv ipld.DAGService) error {
+func SealBlockEnd(ctx context.Context, c cid.Cid, s bool, dserv ipld.DAGService) error {
+    err := undefinedError()
+    if err != nil {
+        return err
+    }
+
     type endParam struct {
+        sk string
         cid string
         success bool
     }
+
     md := GetInstance()
+    kv := getKVFromSession(ctx)
+    if kv == nil {
+        return unexpectedError()
+    }
     var ep = endParam{
-        cid: c.KeyString(),
+        sk: kv.sk,
+        cid: c.String(),
         success: s,
     }
     ej, _ := json.Marshal(ep)
-    _, err := http.Post("http://127.0.0.1:12222/api/v0/storage/seal_end", "application/json", bytes.NewReader(ej))
+    _, err = http.Post(sworkerBaseUrl + "/storage/seal_end", "application/json", bytes.NewReader(ej))
     if err != nil {
         fmt.Printf("Inform sWorker to end seal error:%s\n", err)
     }
@@ -69,8 +125,28 @@ func SealBlockEnd(c cid.Cid, s bool, ctx context.Context, dserv ipld.DAGService)
     return err
 }
 
-func SealBlock(c cid.Cid, r io.Reader, fromBS bool) ([]blocks.Block, error) {
-    resp, err := http.Post("http://127.0.0.1:12222/api/v0/storage/seal", "application/x-www-form-urlencoded", r)
+func SealBlock(ctx context.Context, c cid.Cid, r io.Reader, newBlock bool) ([]blocks.Block, error) {
+    err := undefinedError()
+    if err != nil {
+        return nil, err
+    }
+
+    type sealParam struct {
+        sk string
+        newBlock bool `json:"new_block"`
+    }
+
+    kv := getKVFromSession(ctx)
+    if kv == nil {
+        return unexpectedError()
+    }
+    var bp = sealParam{
+        sk: kv.sk,
+        newBlock: newBlock,
+    }
+    bj, _ := json.Marshal(bp)
+
+    resp, err := http.Post(sworkerBaseUrl + "/storage/seal?" + string(bj), "application/x-www-form-urlencoded", r)
     if err != nil {
 		return nil, err
     }
@@ -81,7 +157,7 @@ func SealBlock(c cid.Cid, r io.Reader, fromBS bool) ([]blocks.Block, error) {
     }
 
     md := GetInstance()
-    cidLen := len(c.KeyString())
+    cidLen := len(c.String())
 
     var wanted []blocks.Block
     snSlic := body[:4]
@@ -108,7 +184,7 @@ func SealBlock(c cid.Cid, r io.Reader, fromBS bool) ([]blocks.Block, error) {
         if err == nil {
             wanted = append(wanted, block)
         }
-        if ! fromBS {
+        if ! newBlock {
             md.Add(rc, c)
         }
     }
